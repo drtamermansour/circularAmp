@@ -55,7 +55,10 @@ blastn -query "$input" -db "$DB" -num_threads 8 -max_target_seqs 1 -outfmt "6 st
 input=${lib}.k71.cov3.len1000/contigs.fa
 blastn -query "$input" -db "$DB" -num_threads 8 -max_target_seqs 1 -outfmt "6 std qlen nident stitle salltitles" > $input.blastn
 
-## back mapping
+## back mapping to Symbiodinium C3 minicricles
+## Retrieve Genbank Records With Range Of Accession Numbers
+## https://www.biostars.org/p/3297/  && https://www.ncbi.nlm.nih.gov/guide/howto/dwn-records/ lead to 
+## https://www.ncbi.nlm.nih.gov/sites/batchentrez?db=Nucleotide
 ## prepare BWA index (for Mapping reads)
 mkdir -p $genome_dir/BwaIndex && cd $genome_dir/BwaIndex
 cp ../sequence.fasta minicircles.fa
@@ -219,8 +222,8 @@ cat ori2_unmerged.pe_aligned_reads.sam | grep -v "^@" | awk '{print $9}' | grep 
 cat ori2_unmerged.pe_aligned_reads.sam | grep -v "^@" | awk '{print $9}' | grep -vw '0' | sed 's/-//' > frag2.unmerged_len
 cat frag2.unmerged_len | awk '{x+=$1}END{print x/NR}'  ## 149.521
 
-
-## third trial assembly
+################################################################################
+## third trial assembly ## add the remaining paired end reads in a paired end format
 module load velvet/1.2.10
 cd $work_dir/asm
 velveth ori3.k71.covAuto 71 -short -fastq merge/ORI_R.fastq -shortPaired -fastq -separate merge/ORI_R1.pe.fastq merge/ORI_R2.pe.fastq
@@ -236,7 +239,7 @@ velvetg ori3.k71.cov3.len500 -cov_cutoff 3 -ins_length 310 -min_contig_lgth 500 
 grep "^>" ori3.k71.cov3.len500/contigs.fa | wc -l ## 24
 
 
-## fourth trial assembly
+## fourth trial assembly add the remaining paired end reads in single end format
 module load velvet/1.2.10
 cd $work_dir/asm
 velveth ori4.k71.covAuto 71 -short -fastq merge/ORI_R.fastq merge/ORI_R1.pe.fastq merge/ORI_R2.pe.fastq
@@ -263,4 +266,98 @@ input=ori4.k71.cov3.len300/contigs.fa
 blastn -query "$input" -db "$DB" -num_threads 8 -max_target_seqs 1 -outfmt "6 std qlen nident stitle salltitles" > $input.blastn
 
 #####################
+
+## blast using Symbiodinium C3 and B1 minicricles
+mkdir -p $genome_dir/BlastIndex_BC && cd $genome_dir/BlastIndex_BC
+cat ../sequence.fasta ../sequence_B1.fasta > minicircles_BC.fa
+module load BLAST+/2.2.29
+makeblastdb -in minicircles_BC.fa -dbtype nucl -out minicir_BC
+#export BLASTDB=/mnt/research/common-data/Bio/blastdb:$BLASTDB
+DB="$genome_dir/BlastIndex_BC/minicir_BC"
+cd $work_dir
+for input in asm_*/*.cov3.len300/contigs.fa;do
+  blastn -query "$input" -db "$DB" -num_threads 8 -max_target_seqs 10 -outfmt "6 std qlen nident stitle slen" > $input.bc.blastn
+done
+
+mkdir ~/temp/blast.Sym_BC
+for k in 99 111 125;do
+ #for output in asm_*/*2.k$k.cov3.len300/contigs.fa.bc.blastn;do
+ for output in asm_*/*2.k$k.cov3.len300/contigs.fa;do
+  newName=$(echo $output | sed 's|/|_|g');
+  cp $output ~/temp/blast.Sym_BC/$newName
+done;done
+
+########################
+## all sequence assembly ## try kmer trimming
+source deactivate
+mkdir $work_dir/all_data
+> $work_dir/all_data/all.fastq
+for lib in ORI Exo;do
+ cat $merge/${lib}_R.fastq >> $work_dir/all_data/all.fastq
+ cat $trim/${lib}_R1.se.fastq $trim/${lib}_R1.se.fastq >> $work_dir/all_data/all.fastq
+done 
+
+for k in 151;do
+#for k in 111 125 141;do
+  velveth all.k$k.cov3.len300 $k -short -fastq all.fastq
+  velvetg all.k$k.cov3.len300 -cov_cutoff 3 -min_contig_lgth 300 &> all.k$k.cov3.len300.log
+  grep "^>" all.k$k.cov3.len300/contigs.fa | wc -l ## 76, 69, 66, 88
+  grep "^>" all.k$k.cov3.len300/contigs.fa | awk -F"_" '{a+=$4}END{print a}'  ## 44156, 43195, 42920, 44048
+done
+
+## blast
+module load BLAST+/2.2.29
+export BLASTDB=/mnt/research/common-data/Bio/blastdb:$BLASTDB
+DB="nt" ##"human_genomic_transcript" ##"human_genomic"
+for input in all.*.cov3.len300/contigs.fa;do
+  blastn -query "$input" -db "$DB" -num_threads 8 -max_target_seqs 1 -outfmt "6 std qlen nident stitle salltitles" > $input.blastn
+done
+
+## compare assemblies
+for f in all.*.cov3.len300/contigs.fa;do echo $f; grep "^>" $f | awk -F "_" '{print $4}' | sort -nr ;done > all.asm_len
+
+echo "assembly total_contigs total_asm_nodeLen blast_contigs blast_contig_nodeLen sig_hits match_len" > all.compare_asm.txt
+for asm in all.*.cov3.len300/contigs.fa;do
+ total_contigs=$(grep "^>" $asm | wc -l)
+ total_asm_nodeLen=$(grep "^>" $asm | awk -F"_" '{a+=$4}END{print a}')
+ blastout=$asm.blastn
+ cat $blastout | awk 'BEGIN {FS=OFS="\t";}{if($4>=100)print;}' | grep -i 'Symbiodinium\|minicircle\|chloroplast' > $blastout.sig
+ contigs=$(cat $blastout.sig | awk -F"\t" '{print $1}' | sort | uniq | wc -l)
+ contig_nodeLen=$(cat $blastout.sig | awk -F"\t" '{print $1}' | sort | uniq | awk -F"_" '{a+=$4}END{print a}')
+ hits=$(cat $blastout.sig | awk -F"\t" '{print $2}' | sort | uniq | wc -l)
+ match_len=$(cat $blastout.sig | awk -F"\t" '{a+=$4}END{print a}')
+ echo $(dirname $blastout) $total_contigs $total_asm_nodeLen $contigs $contig_nodeLen $hits $match_len
+ #cat $blastout | awk 'BEGIN {FS=OFS="\t";}{if($4>=100)print;}' | grep -vi "Escherichia" | wc -l
+ #cat $blastout | sort -k2,2 -k4,4nr > $HOME/temp/$(dirname $blastout).blastn
+done >> all.compare_asm.txt
+
+for blastout in all.*.cov3.len300/contigs.fa.blastn;do
+  cat $blastout | sort -k2,2 -k4,4nr > $HOME/temp/$(dirname $blastout).blastn
+done
+
+
+
+source ~/khmerEnv/bin/activate
+module swap GNU GNU/6.2
+cd $work_dir/all_data
+load-into-counting.py -k 20 -N 4 -x 12e9 --threads 4 countgraph_k20.kt all.fastq
+#Total number of unique k-mers: 335922
+#fp rate estimated to be 0.000
+filter-abund.py countgraph_k20.kt all.fastq
+#processed 348446622 bp / wrote 113835149 bp / removed 234611473 bp
+#discarded 67.3%
+filter-abund.py --cutoff 1 countgraph_k20.kt all.fastq   
+#processed 348446622 bp / wrote 115357500 bp / removed 233089122 bp
+#discarded 66.9%
+deactivate
+
+source activate velvet
+for k in 125;do
+  velveth all_filtered.k$k.cov3.len300 $k -short -fastq all.fastq.abundfilt
+  velvetg all_filtered.k$k.cov3.len300 -cov_cutoff 3 -min_contig_lgth 300 &> all_filtered.k$k.cov3.len300.log
+  grep "^>" all_filtered.k$k.cov3.len300/contigs.fa | wc -l ## 70
+  grep "^>" all_filtered.k$k.cov3.len300/contigs.fa | awk -F"_" '{a+=$4}END{print a}'  ## 36268
+done
+
+
 
